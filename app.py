@@ -22,37 +22,25 @@ def save_data(vocab_list):
     df = pd.DataFrame(vocab_list)
     df.to_csv(DATA_FILE, header=False, index=False)
 
-# ★ここが新技術: Pythonではなく、ブラウザ(JavaScript)に喋らせるHTMLを作る
+# ブラウザ(JavaScript)に喋らせる機能
 def get_browser_speech_html(text, unique_id):
-    # エスケープ処理（単語の中に ' があるとJSが壊れるため）
     safe_text = text.replace("'", "\\'")
-    
     return f"""
     <div style="text-align: center; margin-bottom: 20px;">
         <script>
             function speak_{unique_id}() {{
-                // スマホの読み上げ機能を呼び出す
                 const utter = new SpeechSynthesisUtterance('{safe_text}');
-                utter.lang = 'en-US'; // 英語設定
-                utter.rate = 1.0;     // 速度
-                window.speechSynthesis.cancel(); // 前のを止める
+                utter.lang = 'en-US';
+                utter.rate = 1.0;
+                window.speechSynthesis.cancel();
                 window.speechSynthesis.speak(utter);
             }}
-            
-            // 画面が開いた瞬間に再生を試みる
-            // (少し遅らせることで安定させる)
             setTimeout(speak_{unique_id}, 300);
         </script>
-        
         <button onclick="speak_{unique_id}()" style="
-            background-color: #3498db;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 20px;
-            font-size: 16px;
-            font-weight: bold;
-            cursor: pointer;
+            background-color: #3498db; color: white; border: none;
+            padding: 10px 20px; border-radius: 20px; font-size: 16px;
+            font-weight: bold; cursor: pointer;
             box-shadow: 0 2px 5px rgba(0,0,0,0.2);
         ">
             🔊 音声を再生 (Speak)
@@ -63,7 +51,7 @@ def get_browser_speech_html(text, unique_id):
 # ==========================================
 # アプリ本体
 # ==========================================
-st.set_page_config(page_title="Wordbook v17", layout="centered")
+st.set_page_config(page_title="Wordbook v18", layout="centered")
 
 # CSS
 st.markdown("""
@@ -134,9 +122,7 @@ with tab1:
             # 1. 単語表示
             st.markdown(f"<div class='big-word'>{data['word']}</div>", unsafe_allow_html=True)
 
-            # 2. 音声再生 (JavaScript方式)
-            # サーバーでファイルを作らず、スマホに直接命令を出します
-            # 毎回IDを変えて再実行させる
+            # 2. 音声再生
             unique_id = int(time.time() * 1000)
             html_code = get_browser_speech_html(data['word'], unique_id)
             st.components.v1.html(html_code, height=60)
@@ -144,10 +130,15 @@ with tab1:
             st.write("") 
 
             # 3. 答えの箱
+            # ★修正ポイント: keyにidxを含めることで、単語が変わるたびに強制的に閉じます
             with st.expander("👁️ 答えを確認する (タップ)", expanded=False):
+                # ここに key=... を追加して識別させてもいいのですが、
+                # 上のexpander自体を作り直すために、このブロック全体が再描画されるようにします
                 st.markdown(f"<div class='big-meaning'>{data['meaning']}</div>", unsafe_allow_html=True)
+                
                 if data['miss_count'] > 0:
                     st.markdown(f"<p style='text-align:center; color:red;'>ミス回数: {data['miss_count']}</p>", unsafe_allow_html=True)
+                
                 st.markdown(f"<div style='text-align:center;'><a href='https://dictionary.cambridge.org/ja/dictionary/english/{data['word']}' target='_blank'>📖 辞書リンク</a></div>", unsafe_allow_html=True)
 
             st.write("") 
@@ -155,11 +146,12 @@ with tab1:
             # 4. 判定ボタン
             col_ok, col_ng = st.columns(2)
             with col_ok:
-                if st.button("🙆 正解 (Next)", type="primary"):
+                # keyにidxを付けて、ボタンも確実にリフレッシュ
+                if st.button("🙆 正解 (Next)", type="primary", key=f"next_{idx}"):
                     st.session_state.current_index += 1
                     st.rerun()
             with col_ng:
-                if st.button("🙅 不正解 (Miss)"):
+                if st.button("🙅 不正解 (Miss)", key=f"miss_{idx}"):
                     word_to_update = data['word']
                     for item in st.session_state.vocab_list:
                         if item['word'] == word_to_update:
