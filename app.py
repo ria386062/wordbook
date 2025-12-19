@@ -3,6 +3,7 @@ import pandas as pd
 import os
 import random
 import time
+import eng_to_ipa as ipa # 発音記号用ライブラリ
 
 DATA_FILE = "my_wordbook.csv"
 
@@ -13,7 +14,9 @@ def load_data():
     if not os.path.exists(DATA_FILE): 
         return [{"word": "Start", "meaning": "開始", "miss_count": 0}]
     try:
+        # nan（空データ）を0に変換して読み込む
         df = pd.read_csv(DATA_FILE, header=None, names=["word", "meaning", "miss_count"])
+        df['miss_count'] = df['miss_count'].fillna(0).astype(int)
         return df.to_dict('records')
     except:
         return []
@@ -22,10 +25,9 @@ def save_data(vocab_list):
     df = pd.DataFrame(vocab_list)
     df.to_csv(DATA_FILE, header=False, index=False)
 
-# 音声再生用HTML (待機時間を50msに短縮)
+# ブラウザ読み上げ用HTML
 def get_browser_speech_html(text, unique_id):
-    safe_text = text.replace("'", "\\'")
-    safe_text = safe_text.replace('"', '\\"')
+    safe_text = text.replace("'", "\\'").replace('"', '\\"')
     return f"""
     <div style="text-align: center; margin-bottom: 10px;">
         <script>
@@ -33,13 +35,11 @@ def get_browser_speech_html(text, unique_id):
                 const utter = new SpeechSynthesisUtterance('{safe_text}');
                 utter.lang = 'en-US';
                 utter.rate = 1.0; 
-                window.speechSynthesis.cancel(); // 重複再生を防ぐ
+                window.speechSynthesis.cancel();
                 window.speechSynthesis.speak(utter);
             }}
-            // ★ラグ解消: 待機時間を300ms -> 50msに変更
             setTimeout(speak_{unique_id}, 50);
         </script>
-        
         <button onclick="speak_{unique_id}()" style="
             background-color: #3498db; color: white; border: none;
             padding: 8px 20px; border-radius: 20px; font-size: 14px;
@@ -51,48 +51,26 @@ def get_browser_speech_html(text, unique_id):
     </div>
     """
 
-# ★答えの箱用HTML (Streamlitの機能を使わず、HTMLで書くことで強制リセットさせる)
-def get_details_html(meaning, word, miss_count):
+# ★答えの箱用HTML（強制リセット機能付き）
+def get_details_html(meaning, word, miss_count, unique_id):
+    # unique_id をIDに埋め込むことで、ブラウザに「新しい要素」と認識させる
     return f"""
     <style>
         details {{
-            background-color: #f0f2f6;
-            padding: 15px;
-            border-radius: 10px;
-            margin-bottom: 20px;
-            border: 1px solid #d1d5db;
+            background-color: #f0f2f6; padding: 15px; border-radius: 10px;
+            margin-bottom: 20px; border: 1px solid #d1d5db;
         }}
         summary {{
-            cursor: pointer;
-            font-weight: bold;
-            font-size: 18px;
-            color: #333;
-            list-style: none; /* 三角印を消すかはお好みで */
-            text-align: center;
+            cursor: pointer; font-weight: bold; font-size: 18px;
+            color: #333; text-align: center;
         }}
-        /* アコーディオンの中身 */
-        .content {{
-            margin-top: 15px;
-            text-align: center;
-        }}
-        .meaning-text {{
-            font-size: 24px;
-            color: #e74c3c;
-            font-weight: bold;
-        }}
-        .miss-text {{
-            color: red;
-            font-size: 14px;
-            margin-top: 5px;
-        }}
-        .dict-link a {{
-            color: #3498db;
-            text-decoration: none;
-            font-weight: bold;
-        }}
+        .content {{ margin-top: 15px; text-align: center; }}
+        .meaning-text {{ font-size: 24px; color: #e74c3c; font-weight: bold; }}
+        .miss-text {{ color: red; font-size: 14px; margin-top: 5px; }}
+        .dict-link a {{ color: #3498db; text-decoration: none; font-weight: bold; }}
     </style>
     
-    <details>
+    <details id="details_{unique_id}">
         <summary>👁️ 答えを確認する (タップ)</summary>
         <div class="content">
             <div class="meaning-text">{meaning}</div>
@@ -108,7 +86,7 @@ def get_details_html(meaning, word, miss_count):
 # ==========================================
 # アプリ本体
 # ==========================================
-st.set_page_config(page_title="Wordbook v19", layout="centered")
+st.set_page_config(page_title="Wordbook v20", layout="centered")
 
 st.markdown("""
 <style>
@@ -118,7 +96,11 @@ st.markdown("""
     }
     .big-word {
         font-size: 42px !important; text-align: center; color: #2c3e50;
-        margin: 10px 0; font-weight: 800;
+        margin: 5px 0; font-weight: 800;
+    }
+    .phonetic {
+        font-size: 20px !important; text-align: center; color: #7f8c8d;
+        margin-bottom: 15px; font-family: "Lucida Sans Unicode", "Arial Unicode MS", sans-serif;
     }
     .step-indicator { text-align: center; color: gray; margin-bottom: 5px; }
 </style>
@@ -138,7 +120,7 @@ tab1, tab2 = st.tabs(["📚 学習", "✏️ 登録"])
 # ---------------------------------------------------------
 with tab1:
     if not st.session_state.study_mode:
-        st.info("スタート設定")
+        st.info("設定を選んでスタート")
         col1, col2 = st.columns(2)
         with col1:
             filter_mode = st.radio("対象", ["すべて", "苦手のみ (Miss≧1)"])
@@ -172,15 +154,19 @@ with tab1:
             
             # 1. 単語表示
             st.markdown(f"<div class='big-word'>{data['word']}</div>", unsafe_allow_html=True)
+            
+            # ★新機能: 発音記号表示
+            ipa_text = ipa.convert(data['word'])
+            # *がついている場合は変換失敗なので隠すなどの処理も可能ですが、一旦そのまま表示
+            st.markdown(f"<div class='phonetic'>/{ipa_text}/</div>", unsafe_allow_html=True)
 
-            # 2. 音声再生 (ラグ対策済み)
+            # 2. 音声再生
             unique_id = int(time.time() * 1000)
             html_code = get_browser_speech_html(data['word'], unique_id)
-            st.components.v1.html(html_code, height=70) # 高さを確保してボタン切れ防止
+            st.components.v1.html(html_code, height=70)
 
-            # 3. 答えの箱 (HTMLタグ版)
-            # Streamlitの機能を使わずHTMLで描画するため、毎回必ず閉じた状態で生成されます
-            details_html = get_details_html(data['meaning'], data['word'], data['miss_count'])
+            # 3. 答えの箱 (IDを変えて強制リセット)
+            details_html = get_details_html(data['meaning'], data['word'], data['miss_count'], unique_id)
             st.markdown(details_html, unsafe_allow_html=True)
 
             # 4. 判定ボタン
@@ -231,6 +217,11 @@ with tab2:
         edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True, key="editor")
         if st.button("変更を保存"):
             new_list = edited_df.to_dict('records')
+            # 欠損値対策
+            for d in new_list:
+                if pd.isna(d['miss_count']) or d['miss_count'] == '':
+                    d['miss_count'] = 0
+            
             new_list = [d for d in new_list if d['word'] and d['meaning']]
             st.session_state.vocab_list = new_list
             save_data(new_list)
