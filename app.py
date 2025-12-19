@@ -3,7 +3,7 @@ import pandas as pd
 import os
 import random
 import time
-import eng_to_ipa as ipa # 発音記号用ライブラリ
+import eng_to_ipa as ipa # 発音記号用
 
 DATA_FILE = "my_wordbook.csv"
 
@@ -14,9 +14,9 @@ def load_data():
     if not os.path.exists(DATA_FILE): 
         return [{"word": "Start", "meaning": "開始", "miss_count": 0}]
     try:
-        # nan（空データ）を0に変換して読み込む
         df = pd.read_csv(DATA_FILE, header=None, names=["word", "meaning", "miss_count"])
-        df['miss_count'] = df['miss_count'].fillna(0).astype(int)
+        # nan（空データ）や文字の'nan'を0に強制変換する強力な修正
+        df['miss_count'] = pd.to_numeric(df['miss_count'], errors='coerce').fillna(0).astype(int)
         return df.to_dict('records')
     except:
         return []
@@ -51,42 +51,10 @@ def get_browser_speech_html(text, unique_id):
     </div>
     """
 
-# ★答えの箱用HTML（強制リセット機能付き）
-def get_details_html(meaning, word, miss_count, unique_id):
-    # unique_id をIDに埋め込むことで、ブラウザに「新しい要素」と認識させる
-    return f"""
-    <style>
-        details {{
-            background-color: #f0f2f6; padding: 15px; border-radius: 10px;
-            margin-bottom: 20px; border: 1px solid #d1d5db;
-        }}
-        summary {{
-            cursor: pointer; font-weight: bold; font-size: 18px;
-            color: #333; text-align: center;
-        }}
-        .content {{ margin-top: 15px; text-align: center; }}
-        .meaning-text {{ font-size: 24px; color: #e74c3c; font-weight: bold; }}
-        .miss-text {{ color: red; font-size: 14px; margin-top: 5px; }}
-        .dict-link a {{ color: #3498db; text-decoration: none; font-weight: bold; }}
-    </style>
-    
-    <details id="details_{unique_id}">
-        <summary>👁️ 答えを確認する (タップ)</summary>
-        <div class="content">
-            <div class="meaning-text">{meaning}</div>
-            <div class="miss-text">過去のミス: {miss_count}回</div>
-            <div class="dict-link">
-                <br>
-                <a href="https://dictionary.cambridge.org/ja/dictionary/english/{word}" target="_blank">📖 辞書で見る</a>
-            </div>
-        </div>
-    </details>
-    """
-
 # ==========================================
 # アプリ本体
 # ==========================================
-st.set_page_config(page_title="Wordbook v20", layout="centered")
+st.set_page_config(page_title="Wordbook v21", layout="centered")
 
 st.markdown("""
 <style>
@@ -100,9 +68,16 @@ st.markdown("""
     }
     .phonetic {
         font-size: 20px !important; text-align: center; color: #7f8c8d;
-        margin-bottom: 15px; font-family: "Lucida Sans Unicode", "Arial Unicode MS", sans-serif;
+        margin-bottom: 15px; font-family: sans-serif;
     }
     .step-indicator { text-align: center; color: gray; margin-bottom: 5px; }
+    /* 答えの中身のデザイン */
+    .answer-box {
+        text-align: center; background-color: #f0f2f6;
+        padding: 20px; border-radius: 10px; margin-bottom: 10px;
+    }
+    .meaning-text { font-size: 26px; color: #e74c3c; font-weight: bold; }
+    .miss-text { color: red; font-size: 14px; margin-top: 5px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -155,19 +130,34 @@ with tab1:
             # 1. 単語表示
             st.markdown(f"<div class='big-word'>{data['word']}</div>", unsafe_allow_html=True)
             
-            # ★新機能: 発音記号表示
-            ipa_text = ipa.convert(data['word'])
-            # *がついている場合は変換失敗なので隠すなどの処理も可能ですが、一旦そのまま表示
-            st.markdown(f"<div class='phonetic'>/{ipa_text}/</div>", unsafe_allow_html=True)
+            # ★新機能: 発音記号
+            # ライブラリを使って発音記号を自動取得します
+            try:
+                ipa_text = ipa.convert(data['word'])
+                st.markdown(f"<div class='phonetic'>/{ipa_text}/</div>", unsafe_allow_html=True)
+            except:
+                pass # 変換できない場合は表示しない
 
             # 2. 音声再生
             unique_id = int(time.time() * 1000)
             html_code = get_browser_speech_html(data['word'], unique_id)
             st.components.v1.html(html_code, height=70)
 
-            # 3. 答えの箱 (IDを変えて強制リセット)
-            details_html = get_details_html(data['meaning'], data['word'], data['miss_count'], unique_id)
-            st.markdown(details_html, unsafe_allow_html=True)
+            # 3. 答えの箱 (st.expanderに戻し、裏技で強制リセット)
+            # labelに「見えない空白文字」を交互につけることで、Streamlitに「新しい箱だ」と認識させる
+            label_suffix = " " * (idx % 2) 
+            expander_label = f"👁️ 答えを確認する (タップ){label_suffix}"
+            
+            with st.expander(expander_label, expanded=False):
+                # 中身をHTMLでリッチに表示
+                st.markdown(f"""
+                <div class="answer-box">
+                    <div class="meaning-text">{data['meaning']}</div>
+                    <div class="miss-text">過去のミス: {data['miss_count']}回</div>
+                    <br>
+                    <a href="https://dictionary.cambridge.org/ja/dictionary/english/{data['word']}" target="_blank">📖 辞書で見る</a>
+                </div>
+                """, unsafe_allow_html=True)
 
             # 4. 判定ボタン
             col_ok, col_ng = st.columns(2)
@@ -217,7 +207,7 @@ with tab2:
         edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True, key="editor")
         if st.button("変更を保存"):
             new_list = edited_df.to_dict('records')
-            # 欠損値対策
+            # 保存時にもnanを0にする安全装置
             for d in new_list:
                 if pd.isna(d['miss_count']) or d['miss_count'] == '':
                     d['miss_count'] = 0
