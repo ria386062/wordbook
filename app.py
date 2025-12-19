@@ -3,7 +3,10 @@ import pandas as pd
 import os
 import random
 import time
-import eng_to_ipa as ipa # 発音記号用
+import base64
+from io import BytesIO
+from gtts import gTTS
+import eng_to_ipa as ipa
 
 DATA_FILE = "my_wordbook.csv"
 
@@ -15,7 +18,6 @@ def load_data():
         return [{"word": "Start", "meaning": "開始", "miss_count": 0}]
     try:
         df = pd.read_csv(DATA_FILE, header=None, names=["word", "meaning", "miss_count"])
-        # データクリーニング: nanを0に
         df['miss_count'] = pd.to_numeric(df['miss_count'], errors='coerce').fillna(0).astype(int)
         return df.to_dict('records')
     except:
@@ -25,69 +27,43 @@ def save_data(vocab_list):
     df = pd.DataFrame(vocab_list)
     df.to_csv(DATA_FILE, header=False, index=False)
 
-# ★改良版: 高音質ボイス指定機能付き
-def get_browser_speech_html(text, unique_id):
-    safe_text = text.replace("'", "\\'").replace('"', '\\"')
+# ★重要: 音声生成（キャッシュ機能付き）
+# これにより、同じ単語なら2回目以降は通信しないのでエラーが出ず、爆速になります
+@st.cache_data(show_spinner=False)
+def get_audio_bytes(text):
+    if not text: return None
+    try:
+        # gTTSで音声データを作成
+        tts = gTTS(text=str(text), lang='en')
+        fp = BytesIO()
+        tts.write_to_fp(fp)
+        fp.seek(0)
+        return fp.getvalue()
+    except Exception as e:
+        return None
+
+# 自動再生用のHTMLタグ生成
+def get_autoplay_html(audio_bytes, unique_id):
+    if not audio_bytes: return ""
+    b64 = base64.b64encode(audio_bytes).decode()
     return f"""
-    <div style="text-align: center; margin-bottom: 10px;">
+        <audio autoplay style="display:none;" id="audio_{unique_id}">
+            <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
+        </audio>
         <script>
-            function speak_{unique_id}() {{
-                // 1. まず利用可能な声を全部リストアップする
-                let voices = window.speechSynthesis.getVoices();
-                
-                // 2. 声がロードされていない場合(iOSなど)のための待機処理
-                if (voices.length === 0) {{
-                    window.speechSynthesis.onvoiceschanged = function() {{
-                        voices = window.speechSynthesis.getVoices();
-                        doSpeak_{unique_id}(voices);
-                    }};
-                }} else {{
-                    doSpeak_{unique_id}(voices);
-                }}
-            }}
-
-            function doSpeak_{unique_id}(voices) {{
-                const utter = new SpeechSynthesisUtterance('{safe_text}');
-                utter.lang = 'en-US';
-                utter.rate = 1.0; 
-                utter.pitch = 1.0;
-
-                // ★ここが新機能: より良い声を探すロジック
-                // "Samantha"(iOSの高音質版) や "Google US"(Android) を優先的に探す
-                const bestVoice = voices.find(v => 
-                    (v.lang === 'en-US' && (v.name.includes('Samantha') || v.name.includes('Premium') || v.name.includes('Enhanced'))) 
-                    || (v.lang === 'en-US' && v.name.includes('Google'))
-                );
-                
-                // 見つかったらセットする
-                if (bestVoice) {{
-                    utter.voice = bestVoice;
-                    console.log("Selected voice: " + bestVoice.name);
-                }}
-
-                window.speechSynthesis.cancel();
-                window.speechSynthesis.speak(utter);
-            }}
-            
-            // 画面が開いたら実行
-            setTimeout(speak_{unique_id}, 50);
+            // 強制再生スクリプト
+            var audio = document.getElementById("audio_{unique_id}");
+            audio.volume = 1.0;
+            audio.play().catch(function(error) {{
+                console.log("Autoplay blocked (Check Safari Settings): " + error);
+            }});
         </script>
-        
-        <button onclick="speak_{unique_id}()" style="
-            background-color: #3498db; color: white; border: none;
-            padding: 8px 20px; border-radius: 20px; font-size: 14px;
-            font-weight: bold; cursor: pointer; margin-top: 5px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-        ">
-            🔊 音声を再生
-        </button>
-    </div>
     """
 
 # ==========================================
 # アプリ本体
 # ==========================================
-st.set_page_config(page_title="Wordbook v22", layout="centered")
+st.set_page_config(page_title="Wordbook v23", layout="centered")
 
 st.markdown("""
 <style>
@@ -122,9 +98,6 @@ if 'study_mode' not in st.session_state: st.session_state.study_mode = False
 
 tab1, tab2 = st.tabs(["📚 学習", "✏️ 登録"])
 
-# ---------------------------------------------------------
-# タブ1: 学習
-# ---------------------------------------------------------
 with tab1:
     if not st.session_state.study_mode:
         st.info("設定を選んでスタート")
@@ -169,16 +142,23 @@ with tab1:
             except:
                 pass 
 
-            # 2. 音声再生 (高音質指定)
-            unique_id = int(time.time() * 1000)
-            html_code = get_browser_speech_html(data['word'], unique_id)
-            st.components.v1.html(html_code, height=70)
-
-            # 3. 答えの箱 (強制リセット)
-            label_suffix = " " * (idx % 2) 
-            expander_label = f"👁️ 答えを確認する (タップ){label_suffix}"
+            # 2. 音声再生 (gTTS + 自動再生)
+            # キャッシュのおかげで、一度再生した単語は次回から一瞬で再生されます
+            audio_bytes = get_audio_bytes(data['word'])
             
-            with st.expander(expander_label, expanded=False):
+            if audio_bytes:
+                # 自動再生用の隠しHTML
+                unique_id = int(time.time() * 1000)
+                st.components.v1.html(get_autoplay_html(audio_bytes, unique_id), height=0)
+                
+                # 手動再生ボタン（自動再生がどうしても動かない時用）
+                st.audio(audio_bytes, format='audio/mp3')
+            else:
+                st.warning("音声生成エラー")
+
+            # 3. 答えの箱
+            label_suffix = " " * (idx % 2) 
+            with st.expander(f"👁️ 答えを確認する (タップ){label_suffix}", expanded=False):
                 st.markdown(f"""
                 <div class="answer-box">
                     <div class="meaning-text">{data['meaning']}</div>
@@ -216,9 +196,6 @@ with tab1:
                 st.session_state.study_mode = False
                 st.rerun()
 
-# ---------------------------------------------------------
-# タブ2: 登録
-# ---------------------------------------------------------
 with tab2:
     st.header("単語登録")
     with st.form("add_form", clear_on_submit=True):
@@ -239,7 +216,6 @@ with tab2:
             for d in new_list:
                 if pd.isna(d['miss_count']) or d['miss_count'] == '':
                     d['miss_count'] = 0
-            
             new_list = [d for d in new_list if d['word'] and d['meaning']]
             st.session_state.vocab_list = new_list
             save_data(new_list)
