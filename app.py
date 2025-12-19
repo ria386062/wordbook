@@ -22,51 +22,103 @@ def save_data(vocab_list):
     df = pd.DataFrame(vocab_list)
     df.to_csv(DATA_FILE, header=False, index=False)
 
-# ブラウザ(JavaScript)に喋らせる機能
+# 音声再生用HTML (待機時間を50msに短縮)
 def get_browser_speech_html(text, unique_id):
     safe_text = text.replace("'", "\\'")
+    safe_text = safe_text.replace('"', '\\"')
     return f"""
-    <div style="text-align: center; margin-bottom: 20px;">
+    <div style="text-align: center; margin-bottom: 10px;">
         <script>
             function speak_{unique_id}() {{
                 const utter = new SpeechSynthesisUtterance('{safe_text}');
                 utter.lang = 'en-US';
-                utter.rate = 1.0;
-                window.speechSynthesis.cancel();
+                utter.rate = 1.0; 
+                window.speechSynthesis.cancel(); // 重複再生を防ぐ
                 window.speechSynthesis.speak(utter);
             }}
-            setTimeout(speak_{unique_id}, 300);
+            // ★ラグ解消: 待機時間を300ms -> 50msに変更
+            setTimeout(speak_{unique_id}, 50);
         </script>
+        
         <button onclick="speak_{unique_id}()" style="
             background-color: #3498db; color: white; border: none;
-            padding: 10px 20px; border-radius: 20px; font-size: 16px;
-            font-weight: bold; cursor: pointer;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            padding: 8px 20px; border-radius: 20px; font-size: 14px;
+            font-weight: bold; cursor: pointer; margin-top: 5px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
         ">
-            🔊 音声を再生 (Speak)
+            🔊 音声を再生
         </button>
     </div>
+    """
+
+# ★答えの箱用HTML (Streamlitの機能を使わず、HTMLで書くことで強制リセットさせる)
+def get_details_html(meaning, word, miss_count):
+    return f"""
+    <style>
+        details {{
+            background-color: #f0f2f6;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            border: 1px solid #d1d5db;
+        }}
+        summary {{
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 18px;
+            color: #333;
+            list-style: none; /* 三角印を消すかはお好みで */
+            text-align: center;
+        }}
+        /* アコーディオンの中身 */
+        .content {{
+            margin-top: 15px;
+            text-align: center;
+        }}
+        .meaning-text {{
+            font-size: 24px;
+            color: #e74c3c;
+            font-weight: bold;
+        }}
+        .miss-text {{
+            color: red;
+            font-size: 14px;
+            margin-top: 5px;
+        }}
+        .dict-link a {{
+            color: #3498db;
+            text-decoration: none;
+            font-weight: bold;
+        }}
+    </style>
+    
+    <details>
+        <summary>👁️ 答えを確認する (タップ)</summary>
+        <div class="content">
+            <div class="meaning-text">{meaning}</div>
+            <div class="miss-text">過去のミス: {miss_count}回</div>
+            <div class="dict-link">
+                <br>
+                <a href="https://dictionary.cambridge.org/ja/dictionary/english/{word}" target="_blank">📖 辞書で見る</a>
+            </div>
+        </div>
+    </details>
     """
 
 # ==========================================
 # アプリ本体
 # ==========================================
-st.set_page_config(page_title="Wordbook v18", layout="centered")
+st.set_page_config(page_title="Wordbook v19", layout="centered")
 
-# CSS
 st.markdown("""
 <style>
     .stButton>button {
         height: 3.5em; font-weight: bold; border-radius: 12px; width: 100%;
+        font-size: 18px !important;
     }
     .big-word {
         font-size: 42px !important; text-align: center; color: #2c3e50;
-        margin: 20px 0 10px 0; font-weight: 800;
-    }
-    .big-meaning {
-        font-size: 28px !important; text-align: center; color: #e74c3c;
-        font-weight: bold; padding: 20px; background-color: #fff5f5;
-        border-radius: 15px; border: 2px solid #ffcccc; margin-bottom: 20px;
+        margin: 10px 0; font-weight: 800;
     }
     .step-indicator { text-align: center; color: gray; margin-bottom: 5px; }
 </style>
@@ -79,20 +131,19 @@ if 'study_queue' not in st.session_state: st.session_state.study_queue = []
 if 'current_index' not in st.session_state: st.session_state.current_index = 0
 if 'study_mode' not in st.session_state: st.session_state.study_mode = False
 
-# タブ
-tab1, tab2 = st.tabs(["📚 学習 (Study)", "✏️ 登録 (Add)"])
+tab1, tab2 = st.tabs(["📚 学習", "✏️ 登録"])
 
 # ---------------------------------------------------------
 # タブ1: 学習
 # ---------------------------------------------------------
 with tab1:
     if not st.session_state.study_mode:
-        st.info("設定を選んでスタート")
+        st.info("スタート設定")
         col1, col2 = st.columns(2)
         with col1:
-            filter_mode = st.radio("出題対象", ["すべて", "苦手のみ (Miss≧1)"])
+            filter_mode = st.radio("対象", ["すべて", "苦手のみ (Miss≧1)"])
         with col2:
-            order_mode = st.radio("出題順", ["番号順", "ランダム"])
+            order_mode = st.radio("順番", ["番号順", "ランダム"])
         
         if st.button("▶ 学習スタート", type="primary"):
             target_list = st.session_state.vocab_list.copy()
@@ -122,36 +173,24 @@ with tab1:
             # 1. 単語表示
             st.markdown(f"<div class='big-word'>{data['word']}</div>", unsafe_allow_html=True)
 
-            # 2. 音声再生
+            # 2. 音声再生 (ラグ対策済み)
             unique_id = int(time.time() * 1000)
             html_code = get_browser_speech_html(data['word'], unique_id)
-            st.components.v1.html(html_code, height=60)
+            st.components.v1.html(html_code, height=70) # 高さを確保してボタン切れ防止
 
-            st.write("") 
-
-            # 3. 答えの箱
-            # ★修正ポイント: keyにidxを含めることで、単語が変わるたびに強制的に閉じます
-            with st.expander("👁️ 答えを確認する (タップ)", expanded=False):
-                # ここに key=... を追加して識別させてもいいのですが、
-                # 上のexpander自体を作り直すために、このブロック全体が再描画されるようにします
-                st.markdown(f"<div class='big-meaning'>{data['meaning']}</div>", unsafe_allow_html=True)
-                
-                if data['miss_count'] > 0:
-                    st.markdown(f"<p style='text-align:center; color:red;'>ミス回数: {data['miss_count']}</p>", unsafe_allow_html=True)
-                
-                st.markdown(f"<div style='text-align:center;'><a href='https://dictionary.cambridge.org/ja/dictionary/english/{data['word']}' target='_blank'>📖 辞書リンク</a></div>", unsafe_allow_html=True)
-
-            st.write("") 
+            # 3. 答えの箱 (HTMLタグ版)
+            # Streamlitの機能を使わずHTMLで描画するため、毎回必ず閉じた状態で生成されます
+            details_html = get_details_html(data['meaning'], data['word'], data['miss_count'])
+            st.markdown(details_html, unsafe_allow_html=True)
 
             # 4. 判定ボタン
             col_ok, col_ng = st.columns(2)
             with col_ok:
-                # keyにidxを付けて、ボタンも確実にリフレッシュ
-                if st.button("🙆 正解 (Next)", type="primary", key=f"next_{idx}"):
+                if st.button("🙆 正解 (Next)", type="primary"):
                     st.session_state.current_index += 1
                     st.rerun()
             with col_ng:
-                if st.button("🙅 不正解 (Miss)", key=f"miss_{idx}"):
+                if st.button("🙅 不正解 (Miss)"):
                     word_to_update = data['word']
                     for item in st.session_state.vocab_list:
                         if item['word'] == word_to_update:
