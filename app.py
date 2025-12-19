@@ -5,6 +5,7 @@ import os
 from io import BytesIO
 import random
 import base64
+import time
 
 DATA_FILE = "my_wordbook.csv"
 
@@ -13,7 +14,7 @@ DATA_FILE = "my_wordbook.csv"
 # ==========================================
 def load_data():
     if not os.path.exists(DATA_FILE): 
-        return [{"word": "example", "meaning": "例", "miss_count": 0}]
+        return [{"word": "Start", "meaning": "開始", "miss_count": 0}]
     try:
         df = pd.read_csv(DATA_FILE, header=None, names=["word", "meaning", "miss_count"])
         return df.to_dict('records')
@@ -35,13 +36,19 @@ def get_audio_bytes(text):
     except:
         return None
 
-# 自動再生用のHTML生成（復活させました）
+# ★重要修正: 毎回異なるHTMLを生成して、ブラウザに再読み込みを強制させる
 def get_autoplay_html(audio_bytes):
     b64 = base64.b64encode(audio_bytes).decode()
+    # time.time()を使って、毎回IDを変えることでブラウザのキャッシュを回避
+    unique_id = int(time.time() * 1000) 
     return f"""
-        <audio autoplay>
+        <audio autoplay style="display:none;" id="audio_{unique_id}">
         <source src="data:audio/mp3;base64,{b64}" type="audio/mp3">
         </audio>
+        <script>
+            var audio = document.getElementById("audio_{unique_id}");
+            audio.play();
+        </script>
     """
 
 # ==========================================
@@ -49,25 +56,31 @@ def get_autoplay_html(audio_bytes):
 # ==========================================
 st.set_page_config(page_title="Wordbook", layout="centered")
 
-# スマホで見やすくするためのCSS
+# CSS: スマホで見やすくする
 st.markdown("""
 <style>
     .stButton>button {
-        height: 3em;
+        height: 3.5em;
         font-weight: bold;
+        border-radius: 10px;
+        font-size: 18px !important;
     }
     .big-word {
-        font-size: 40px !important;
+        font-size: 42px !important;
         text-align: center;
         color: #2c3e50;
-        margin: 0;
-        padding: 20px 0;
+        margin: 20px 0;
+        font-weight: 800;
     }
     .big-meaning {
-        font-size: 24px !important;
+        font-size: 28px !important;
         text-align: center;
-        color: #27ae60;
+        color: #e74c3c;
         font-weight: bold;
+        padding: 20px;
+        background-color: #fdf2f0;
+        border-radius: 10px;
+        margin-bottom: 20px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -77,8 +90,10 @@ if 'vocab_list' not in st.session_state: st.session_state.vocab_list = load_data
 if 'study_queue' not in st.session_state: st.session_state.study_queue = []
 if 'current_index' not in st.session_state: st.session_state.current_index = 0
 if 'study_mode' not in st.session_state: st.session_state.study_mode = False
+# ★新機能: 答えを表示しているかどうかのフラグ
+if 'is_answer_visible' not in st.session_state: st.session_state.is_answer_visible = False
 
-st.title("📱 My Wordbook")
+st.title("📱 My Wordbook v13")
 
 # タブ切り替え
 tab1, tab2 = st.tabs(["📚 学習 (Study)", "✏️ 登録 (Add)"])
@@ -88,9 +103,8 @@ tab1, tab2 = st.tabs(["📚 学習 (Study)", "✏️ 登録 (Add)"])
 # ---------------------------------------------------------
 with tab1:
     if not st.session_state.study_mode:
-        # --- メニュー ---
+        # === メニュー画面 ===
         st.write("設定を選んでスタート")
-        
         col1, col2 = st.columns(2)
         with col1:
             filter_mode = st.radio("対象", ["すべて", "苦手のみ (Miss≧1)"])
@@ -109,10 +123,11 @@ with tab1:
                 st.session_state.study_queue = target_list
                 st.session_state.current_index = 0
                 st.session_state.study_mode = True
+                st.session_state.is_answer_visible = False # 最初は答えを隠す
                 st.rerun()
 
     else:
-        # --- 学習画面 ---
+        # === 学習中画面 ===
         queue = st.session_state.study_queue
         idx = st.session_state.current_index
         total = len(queue)
@@ -120,61 +135,87 @@ with tab1:
         if idx < total:
             data = queue[idx]
             
-            # 進捗バー
+            # ヘッダー
             st.progress((idx + 1) / total)
             st.caption(f"Question {idx + 1} / {total}")
             
-            # === 単語表示 ===
+            # 1. 単語表示（常に表示）
             st.markdown(f"<div class='big-word'>{data['word']}</div>", unsafe_allow_html=True)
-
-            # === 音声再生 ===
+            
+            # 音声再生処理
             audio_bytes = get_audio_bytes(data['word'])
-            if audio_bytes:
-                # 1. 自動再生（見えないプレイヤーを埋め込む）
-                st.markdown(get_autoplay_html(audio_bytes), unsafe_allow_html=True)
-                # 2. 手動再生ボタン（自動で鳴らなかった時用）
-                st.audio(audio_bytes, format='audio/mp3')
+            
+            # ★フェーズ分岐: 答えを見る前 or 見た後
+            if not st.session_state.is_answer_visible:
+                # ==========================
+                # PHASE A: 問題出題中
+                # ==========================
+                
+                # 自動再生（答えを見る前だけ再生する）
+                # keyにidxを含めることで、単語が変わるたびに強制的に再描画させる
+                if audio_bytes:
+                    autoplay_html = get_autoplay_html(audio_bytes)
+                    st.components.v1.html(autoplay_html, height=0)
 
-            # ミス表示
-            if data['miss_count'] > 0:
-                st.markdown(f"<p style='text-align:center; color:red;'>⚠️ 過去のミス: {data['miss_count']}回</p>", unsafe_allow_html=True)
+                # 手動再生ボタン（予備）
+                if audio_bytes:
+                    st.audio(audio_bytes, format='audio/mp3')
 
-            st.divider()
+                st.write("") # スペース調整
+                st.info("答えを思い浮かべてください...")
+                
+                # 「答えを見る」ボタン
+                if st.button("答えを表示 (Show Answer)", type="primary", use_container_width=True):
+                    st.session_state.is_answer_visible = True
+                    st.rerun()
 
-            # === 答え合わせ (アコーディオン) ===
-            # ★修正: keyにidxを入れることで、単語が変わるたびに「新しい箱」として認識させ、強制的に閉じる
-            with st.expander("👁️ 答えを表示 (タップ)", expanded=False):
-                # ここにキーを指定することでリセットされます
+            else:
+                # ==========================
+                # PHASE B: 答え合わせ中
+                # ==========================
+                
+                # 意味をドカンと表示
                 st.markdown(f"<div class='big-meaning'>{data['meaning']}</div>", unsafe_allow_html=True)
-                
-                st.write("") 
-                
+
+                # ミス回数表示
+                if data['miss_count'] > 0:
+                    st.markdown(f"<p style='text-align:center; color:red;'>⚠️ 過去のミス: {data['miss_count']}回</p>", unsafe_allow_html=True)
+
+                st.write("") # スペース
+
+                # 判定ボタンエリア
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button("🙆 次へ", type="primary", use_container_width=True, key=f"next_{idx}"):
+                    # 分かったボタン
+                    if st.button("🙆 次へ (Next)", type="primary", use_container_width=True):
                         st.session_state.current_index += 1
+                        st.session_state.is_answer_visible = False # 次の単語のために隠す
                         st.rerun()
                 with col2:
-                    if st.button("🙅 ミス", use_container_width=True, key=f"miss_{idx}"):
+                    # 分からないボタン
+                    if st.button("🙅 ミス (Miss)", use_container_width=True):
                         word_to_update = data['word']
                         for item in st.session_state.vocab_list:
                             if item['word'] == word_to_update:
                                 item['miss_count'] += 1
                         save_data(st.session_state.vocab_list)
+                        
                         st.session_state.current_index += 1
+                        st.session_state.is_answer_visible = False # 次の単語のために隠す
                         st.rerun()
                 
-                st.caption("リンク:")
-                st.markdown(f"[Cambridge Dictionary](https://dictionary.cambridge.org/ja/dictionary/english/{data['word']})")
+                st.markdown("---")
+                st.markdown(f"[📖 辞書で確認する](https://dictionary.cambridge.org/ja/dictionary/english/{data['word']})")
 
-            # 中断ボタン
-            st.write("")
-            if st.button("メニューに戻る"):
+            # 中断ボタン（常に下部に表示）
+            st.divider()
+            if st.button("メニューに戻る", key="menu_back"):
                 st.session_state.study_mode = False
                 st.rerun()
                 
         else:
-            st.success("学習完了！")
+            # 終了画面
+            st.success("🎉 学習完了！ Great Job!")
             st.balloons()
             if st.button("トップへ戻る", type="primary"):
                 st.session_state.study_mode = False
@@ -185,7 +226,6 @@ with tab1:
 # ---------------------------------------------------------
 with tab2:
     st.header("単語の追加")
-    
     with st.form("add_form", clear_on_submit=True):
         new_word = st.text_input("英単語")
         new_meaning = st.text_input("意味")
@@ -198,18 +238,10 @@ with tab2:
                 st.success(f"「{new_word}」を追加しました！")
             else:
                 st.warning("文字を入力してください")
-
-    st.divider()
     
     with st.expander("📋 リスト一覧・編集・削除"):
-        st.info("修正する場合はここをタップして編集してください")
         df = pd.DataFrame(st.session_state.vocab_list)
-        edited_df = st.data_editor(
-            df,
-            num_rows="dynamic",
-            use_container_width=True,
-            key="editor"
-        )
+        edited_df = st.data_editor(df, num_rows="dynamic", use_container_width=True, key="editor")
         if st.button("変更を保存"):
             new_list = edited_df.to_dict('records')
             new_list = [d for d in new_list if d['word'] and d['meaning']]
